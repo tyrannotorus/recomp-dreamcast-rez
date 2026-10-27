@@ -1,8 +1,8 @@
 # Rez Recompiled
-Rez (Sega Dreamcast, 2001) is one of my favourite games. This is a recomp of Rez for Linux and the
-TrimUI Brick. It has been statically recompiled to C++. Unlike many recomps, this one does not rely
-on hardware processor simulation. A large amount of time has been spent on performance, especially
-on the TrimUI Brick.
+Rez (Sega Dreamcast, 2001) is one of my favourite games.
+This is a recomp of Rez for Linux and the TrimUI Brick. It has been statically recompiled to C++.
+Unlike many recomps, this one does not rely on hardware processor simulation. A large amount of
+time has been spent on performance, especially targeting the TrimUI Brick.
 
 <img width="1024" height="768" alt="rez-005" src="https://github.com/user-attachments/assets/53d0e6d9-c97f-4733-afb9-8ba0cb8bdd46" />
 
@@ -39,8 +39,6 @@ own work. You are welcome to fork, but beware, here be dragons.
 2. Unzip it to `Tools/tg5040/Rez.pak/` on the SD card.
 3. Copy your Rez `.chd` (Japanese or European) to `Tools/tg5040/Rez.pak/disc/`.
 4. Start Tools > Rez. MENU quits.
-
-Settings and saves are kept in `.userdata/shared/rez_recompiled/`.
 
 ## Building for Linux and the Brick
 See [BUILDING.md](BUILDING.md).
