@@ -1,0 +1,42 @@
+# No game data in this repository: disc images, anything extracted or derived from them, BIOS and
+# memory-card images. Every player supplies their own disc.
+*.chd
+*.cue
+*.gdi
+*.cdi
+*.iso
+*.bin
+*.BIN
+*.raw
+*.img
+*.mds
+*.mdf
+*.nrg
+*.PVR
+*.AFS
+*.ADX
+*.DAT
+*.vmu
+*.vms
+*.vmi
+/discs/
+game/extracted/
+texture_dump/
+texture_packs/
+
+# Build output and machine-local state
+/build*/
+/.deps/
+/.rez_recompiled/
+/.cache/
+compile_commands.json
+*.ppm
+*.wav
+*.log
+__pycache__/
+*.pyc
+
+# Local agent notes
+CLAUDE.md
+CLAUDE.local.md
+.claude/

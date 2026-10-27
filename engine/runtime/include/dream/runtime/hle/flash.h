@@ -1,0 +1,72 @@
+// Katana flash ROM layout: five partitions, three of them block-allocated with a header,
+// 64-byte user blocks and free bitmaps, the way the system libraries (and KallistiOS) read them.
+// Block handling follows redream/Flycast (GPL-2.0). The bytes live in DcMemory::flash().
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace dream::hle {
+
+enum class Language : std::uint8_t { Japanese = 0, English, German, French, Spanish, Italian };
+// The console's own region and video standard, as the factory partition records them. The numbering
+// is the console's, not ours: Flycast writes '0' + the value at the offsets stamped in format().
+enum class Region : std::uint8_t { Japan = 0, Usa, Europe };
+enum class Broadcast : std::uint8_t { Ntsc = 0, Pal, PalM, PalN };
+
+// Maps the [game] region string to the console setting. dcdisc writes the IP.BIN area symbol in
+// full ("Japan", "USA", "Europe"; ipbin.py), so those are the names to expect; anything else,
+// including an absent field, falls back to USA rather than guessing.
+Region region_from_name(std::string_view name) noexcept;
+// Europe shipped PAL, everywhere else NTSC. Only a default: a title that cares reads the flash.
+constexpr Broadcast broadcast_for(Region r) noexcept {
+    return r == Region::Europe ? Broadcast::Pal : Broadcast::Ntsc;
+}
+
+class Flash {
+public:
+    static constexpr std::uint32_t kSize = 128u << 10;
+    static constexpr std::uint32_t kBlock = 64;
+    enum Partition : unsigned { Factory = 0, Reserved, User, Game, Unknown, Count };
+    static constexpr std::uint32_t kSyscfgBlock = 0x05;
+
+    explicit Flash(std::uint8_t* data) : data_(data) {}
+
+    // Partition offset and size in bytes; false for an unknown id.
+    static bool partition(unsigned id, std::uint32_t& offset, std::uint32_t& size) noexcept;
+
+    // Erases everything, writes the factory strings and formats the block partitions, then stores a
+    // system-configuration block with the given language.
+    //
+    // Region defaults to USA; pass the disc's own region when it is known. Flycast's generated
+    // flash reads "00110".
+    //
+    // `sysinfo` is the 16-byte factory string. Its region, language and broadcast digits are
+    // overwritten from the arguments, so callers need not encode them by hand.
+    void format(Language lang, Region region = Region::Usa, Broadcast broadcast = Broadcast::Ntsc,
+                const char* sysinfo = "00000Dreamcast  ");
+
+    // Block-allocated partitions: logical block id -> 60 bytes of payload (crc handled here).
+    bool read_block(unsigned part, std::uint32_t block_id, std::uint8_t out60[60]) const;
+    bool write_block(unsigned part, std::uint32_t block_id, const std::uint8_t in60[60]);
+    void erase_partition(unsigned part);
+
+    // Raw access the syscalls use. Writes only clear bits, as flash does.
+    std::uint8_t read8(std::uint32_t offset) const noexcept { return data_[offset & (kSize - 1)]; }
+    void program8(std::uint32_t offset, std::uint8_t v) noexcept {
+        data_[offset & (kSize - 1)] &= v;
+    }
+
+    static std::uint16_t crc(const std::uint8_t* block62) noexcept;
+
+private:
+    static std::uint32_t user_blocks(std::uint32_t size) noexcept;
+    bool header_ok(std::uint32_t offset, unsigned part) const noexcept;
+    std::uint32_t lookup(std::uint32_t offset, std::uint32_t size,
+                         std::uint32_t block_id) const noexcept;
+    std::uint32_t alloc(std::uint32_t offset, std::uint32_t size) noexcept;
+    std::uint8_t* data_;
+};
+
+}  // namespace dream::hle
