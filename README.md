@@ -25,7 +25,7 @@ time has been spent on performance, especially targeting the TrimUI Brick.
 - TrimUI Brick: full speed (60 fps) at 640x480. 1024x768 is supported.
 
 ## Known Issues
-- TrimUI Brick: Frame Drops on some stages in Area 5 in 1024x768 resolution.
+- None known
 
 ## Dev Disclaimer
 While I am an industry veteran, note this project has been human-directed but 100% slop-coded. I've
