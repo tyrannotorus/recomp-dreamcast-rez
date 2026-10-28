@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(rez_recomp VERSION 1.0.0 LANGUAGES C CXX)
+project(rez_recomp VERSION 1.0.1 LANGUAGES C CXX)
 
 # Rez (Dreamcast) as a native program. engine/ translates the game's SH-4 code to C++ at build time
 # and provides the runtime it runs on; src/framework/ is the port layer (settings, NextUI screens);
