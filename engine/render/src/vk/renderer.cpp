@@ -218,6 +218,7 @@ struct DrawState {
     PushConstants push{};
     VkRect2D scissor{};
     bool ok = false;      // a pipeline draws it
+    bool additive = false;  // its blend only adds to the target
     std::uint32_t key = 0;  // its PipelineKey's bits: a line batch's pipeline is the line variant
 };
 // A frame's distinct states and the order its items are drawn in: the render thread's own (an
@@ -244,10 +245,11 @@ struct Translucent {
 thread_local std::vector<Item> t_drawn;
 
 // The translucent items, `sorted` back to front, appended to `out` regrouped by state.
-// They write neither depth nor stencil, so two that share no pixel draw the same in either order:
-// each item joins the latest group with its state unless a later group overlaps its screen bounds
-// (plus a pixel), and otherwise starts a group. Non-finite bounds overlap everything; items no
-// pipeline draws are left out.
+// They write neither depth nor stencil, so two that share no pixel draw the same in either order,
+// as do two whose blends only add to the target: each item joins the latest group with its state
+// unless a later group overlaps its screen bounds (plus a pixel) and they do not both add, and
+// otherwise starts a group. Non-finite bounds overlap everything; items no pipeline draws are left
+// out.
 void regroup(const std::vector<Translucent>& sorted, std::vector<Item>& out) {
     // How many groups back an item may move; the search stops at the first overlap anyway.
     constexpr std::size_t kReach = 32;
@@ -266,6 +268,7 @@ void regroup(const std::vector<Translucent>& sorted, std::vector<Item>& out) {
         if (state == kNoState)
             continue;
         const float b[4] = {t.x0 - 1.0f, t.y0 - 1.0f, t.x1 + 1.0f, t.y1 + 1.0f};
+        const bool additive = t_states[state].additive;
         std::size_t found = groups.size();
         for (std::size_t k = groups.size(), steps = 0; k-- > 0 && steps < kReach; ++steps) {
             const Group& g = groups[k];
@@ -273,7 +276,8 @@ void regroup(const std::vector<Translucent>& sorted, std::vector<Item>& out) {
                 found = k;
                 break;
             }
-            if (b[0] < g.x1 && g.x0 < b[2] && b[1] < g.y1 && g.y0 < b[3])
+            if (b[0] < g.x1 && g.x0 < b[2] && b[1] < g.y1 && g.y0 < b[3] &&
+                !(additive && t_states[g.state].additive))
                 break;  // it would move before something it overlaps
         }
         if (found == groups.size()) {
@@ -368,8 +372,8 @@ VkPipeline Renderer::pipeline_for(const PipelineKey& key) {
     return pipeline;
 }
 
-// A state's pipeline for line batches: its own with lines.vert, an instance a line.
-// A frame draws a few dozen batches at most, so a map will do.
+// A state's pipeline for line batches: its own with lines.vert, an instance a line. Looked up once
+// a frame per state, so a map will do.
 VkPipeline Renderer::line_pipeline_for(const PipelineKey& key) {
     if (auto it = line_pipelines_.find(key.bits()); it != line_pipelines_.end())
         return it->second;
@@ -679,6 +683,9 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
         key.blend = blended ? 1u : 0u;
         key.src_blend = tsp_src_instr(p.tsp) & 7u;
         key.dst_blend = tsp_dst_instr(p.tsp) & 7u;
+        // Destination factor one, and a source factor not taken from the target.
+        st.additive = blended && key.dst_blend == 1u &&
+                      (key.src_blend == 0u || key.src_blend == 1u || key.src_blend == 4u || key.src_blend == 5u);
         key.shadow = (stencil_ && !blended) ? (pcw_shadow(p.pcw) & 1u) : 0u;
         const std::uint32_t mode = p.tile_clip & 3u;
         key.discard = (alpha_test || mode == 3) ? 1u : 0u;  // the shader's two discards
@@ -853,6 +860,21 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
         }
         void grow(const Vertex& v) { grow(v.x, v.y); }
     };
+    // The guest region shown, a pixel wider on each side: lines wholly outside it draw nothing.
+    // NaN compares false, so a line with one is kept.
+    const float region_x0 = geometry.left - 1.0f, region_y0 = geometry.top - 1.0f;
+    const float region_x1 = geometry.left + geometry.width + 1.0f;
+    const float region_y1 = geometry.top + geometry.height + 1.0f;
+    const auto box_off_region = [&](const Box& bb) {
+        return bb.finite && (bb.x1 < region_x0 || bb.x0 > region_x1 || bb.y1 < region_y0 || bb.y0 > region_y1);
+    };
+    // A line's quad lies within a half width of its ends (lines.vert).
+    const auto line_off_region = [&](const LineEdge& le, float hw) {
+        return (le.xa + hw < region_x0 && le.xb + hw < region_x0) ||
+               (le.xa - hw > region_x1 && le.xb - hw > region_x1) ||
+               (le.ya + hw < region_y0 && le.yb + hw < region_y0) ||
+               (le.ya - hw > region_y1 && le.yb - hw > region_y1);
+    };
     const auto add_translucent = [&](const Item& item, const Box& bb) {
         constexpr float kInf = std::numeric_limits<float>::infinity();
         pairs.push_back(std::uint64_t{depth_key(item.depth)} << 32 | translucent.size());
@@ -889,8 +911,8 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
                 last = &p;
             }
             if (p.line_batch) {
-                // A line batch: one item, drawn as one instanced draw,
-                // sorted by its ends' mean 1/w; its bounds its ends', a half width around.
+                // A line batch: one item, sorted by its ends' mean 1/w; its bounds its ends', a
+                // half width around. One wholly outside the region is left out.
                 const LineBatch& lb = frame.lines[p.first];
                 float sum = 0.0f;
                 Box bb;
@@ -905,6 +927,8 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
                 bb.y0 -= hw;
                 bb.x1 += hw;
                 bb.y1 += hw;
+                if (box_off_region(bb))
+                    continue;
                 const Item item{lb.count ? sum / static_cast<float>(2 * lb.count) : 0.0f, p.first, kLineBatch, even};
                 if (blended)
                     add_translucent(item, bb);
@@ -1041,54 +1065,88 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
         vkCmdDrawIndexed(cmd, run.count, 1, run.first, 0, 0);
         run.count = 0;
     };
-    // The line batches' lines: an instance each, in Frame::line_edges' order, with
-    // their ends' table fog, the batch's colours and half width; on binding 1, which only the line
-    // pipelines read. A batch is then one draw of four vertices an instance (lines.vert).
-    const bool lines = !frame.line_edges.empty();
-    if (lines) {
-        HostBuffer& lb = line_ring_[ring_slot];
+    // The line batches' lines: an instance each, with their ends' table fog, the batch's colours
+    // and half width; on binding 1, which only the line pipelines read. Written in draw order as
+    // the items are recorded, so consecutive line items with one state are one draw of four
+    // vertices an instance (lines.vert). Lines wholly outside the region are left out.
+    LineInstance* li = nullptr;
+    HostBuffer* lb = nullptr;
+    std::uint32_t line_at = 0;  // the next instance written
+    thread_local std::vector<VkPipeline> line_pipes;  // each state's line pipeline, once a frame
+    thread_local std::vector<std::uint8_t> line_piped;
+    if (!frame.line_edges.empty()) {
+        lb = &line_ring_[ring_slot];
         const VkDeviceSize lbytes = frame.line_edges.size() * sizeof(LineInstance);
-        if (!lb.ensure(*ctx_, lbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true) || !lb.mapped())
+        if (!lb->ensure(*ctx_, lbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true) || !lb->mapped())
             return;
-        auto* li = static_cast<LineInstance*>(lb.mapped());
-        for (const LineBatch& b : frame.lines) {
-            for (std::uint32_t e = b.first; e < b.first + b.count; ++e) {
-                const LineEdge& le = frame.line_edges[e];
-                LineInstance& o = li[e];
-                o.a[0] = le.xa;
-                o.a[1] = le.ya;
-                o.a[2] = le.za;
-                o.a[3] = table_fog ? fog_table_value(geometry.fog, le.za) : 0.0f;
-                o.b[0] = le.xb;
-                o.b[1] = le.yb;
-                o.b[2] = le.zb;
-                o.b[3] = table_fog ? fog_table_value(geometry.fog, le.zb) : 0.0f;
-                o.base = b.base;
-                o.offset = b.offset;
-                o.half_width = b.half_width;
-            }
-        }
-        lb.flush(0, lbytes);
+        li = static_cast<LineInstance*>(lb->mapped());
         const VkDeviceSize zero_offset = 0;
-        const VkBuffer lbuf = lb.handle();
+        const VkBuffer lbuf = lb->handle();
         vkCmdBindVertexBuffers(cmd, 1, 1, &lbuf, &zero_offset);
+        line_pipes.assign(t_states.size(), VK_NULL_HANDLE);
+        line_piped.assign(t_states.size(), 0);
     }
-    const auto draw_lines = [&](const Item& item) {
-        if (!lines || item.state == kNoState)
+    // Instances [first, first + count), drawn with one state's line pipeline.
+    struct LineRun {
+        std::uint32_t id = kNoState;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        std::uint32_t first = 0, count = 0;
+    } line_run;
+    const auto flush_lines = [&] {
+        if (line_run.count == 0)
+            return;
+        bind_state(t_states[line_run.id], line_run.pipeline);
+        vkCmdDraw(cmd, 4, line_run.count, 0, line_run.first);
+        line_run.count = 0;
+    };
+    // Appends an item's lines to the run, drawing the run first when the state changes. An item no
+    // pipeline draws keeps the run open.
+    const auto add_lines = [&](const Item& item) {
+        if (!li || item.state == kNoState)
             return;
         const LineBatch& b = frame.lines[item.first];
-        const DrawState& st = t_states[item.state];
-        const VkPipeline lp = b.count ? line_pipeline_for(key_from_bits(st.key)) : VK_NULL_HANDLE;
+        if (b.count == 0)
+            return;
+        if (!line_piped[item.state]) {
+            line_piped[item.state] = 1;
+            line_pipes[item.state] = line_pipeline_for(key_from_bits(t_states[item.state].key));
+        }
+        const VkPipeline lp = line_pipes[item.state];
         if (!lp)
             return;
-        bind_state(st, lp);
-        vkCmdDraw(cmd, 4, b.count, 0, b.first);
+        if (line_run.count != 0 && line_run.id != item.state)
+            flush_lines();
+        if (line_run.count == 0) {
+            line_run.id = item.state;
+            line_run.pipeline = lp;
+            line_run.first = line_at;
+        }
+        const float hw = std::abs(b.half_width);
+        for (std::uint32_t e = b.first; e < b.first + b.count; ++e) {
+            const LineEdge& le = frame.line_edges[e];
+            if (line_off_region(le, hw))
+                continue;
+            LineInstance& o = li[line_at++];
+            o.a[0] = le.xa;
+            o.a[1] = le.ya;
+            o.a[2] = le.za;
+            o.a[3] = table_fog ? fog_table_value(geometry.fog, le.za) : 0.0f;
+            o.b[0] = le.xb;
+            o.b[1] = le.yb;
+            o.b[2] = le.zb;
+            o.b[3] = table_fog ? fog_table_value(geometry.fog, le.zb) : 0.0f;
+            o.base = b.base;
+            o.offset = b.offset;
+            o.half_width = b.half_width;
+            ++line_run.count;
+        }
     };
     const std::size_t draws = items.size();
     for (std::size_t index = 0; index < draws; ++index) {
         const Item& item = items[index];
         if (!volumes_drawn && index == translucent_start) {
             flush();
+            flush_lines();
             // After the opaque and punch-through lists, before the translucent one (Flycast).
             if (!same_rect(scissor_now, full_scissor)) {
                 vkCmdSetScissor(cmd, 0, 1, &full_scissor);
@@ -1102,12 +1160,13 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
         }
         if (item.count == kLineBatch) {
             flush();
-            draw_lines(item);
+            add_lines(item);
             continue;
         }
         const std::uint32_t id = item.state;
         if (id == kNoState || item.count < 3)
             continue;  // no pipeline, or fewer than three vertices: nothing drawn
+        flush_lines();
         const std::uint32_t first_index = at;
         for (std::uint32_t j = 0; j + 2 < item.count; ++j) {
             const std::uint32_t v = item.first + j;
@@ -1128,8 +1187,11 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
         }
     }
     flush();
+    flush_lines();
     if (ib)
         ib->flush(0, std::size_t{at} * sizeof(std::uint32_t));
+    if (lb)
+        lb->flush(0, std::size_t{line_at} * sizeof(LineInstance));
     vkCmdSetScissor(cmd, 0, 1, &full_scissor);
     if (!volumes_drawn)
         draw_modifier_volumes(cmd, frame, geometry, buffer);
