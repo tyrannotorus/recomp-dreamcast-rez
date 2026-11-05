@@ -1,3 +1,7 @@
+# Deprecated
+Rez Recompiled still works and you may download it, but it has since been replaced with the Deadcast emulator and its integrated Recomp
+Store, available in the NextUI Pak Store, or download here [here](https://github.com/tyrannotorus/emulator-dreamcast-deadcast).
+
 # Rez Recompiled
 Rez (Sega Dreamcast, 2001) is one of my favourite games.
 This is a recomp of Rez for Linux and the TrimUI Brick. It has been statically recompiled to C++.
@@ -35,7 +39,7 @@ project, but I still cannot guarantee "thoughtfully-engineered code" at the grou
 own work. You are welcome to fork, but beware, here be dragons.
 
 ## Install on the TrimUI Brick (NextUI)
-1. Download `Rez.pak.zip` from [Releases](https://github.com/tyrannotorus/recomp-dreamcast-rez/releases).
+z1. Download `Rez.pak.zip` from [Releases](https://github.com/tyrannotorus/recomp-dreamcast-rez/releases).
 2. Unzip it to `Tools/tg5040/Rez.pak/` on the SD card.
 3. Copy your Rez `.chd` (Japanese or European) to `Tools/tg5040/Rez.pak/disc/`.
 4. Start Tools > Rez. MENU quits.
